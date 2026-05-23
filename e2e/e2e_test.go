@@ -77,9 +77,9 @@ func TestE2EPepTransmission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp routes file: %v", err)
 	}
-	defer func() { _ = tmpFile.Close() }()
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	_, _ = tmpFile.Write(routesData)
+	_ = tmpFile.Close()
 
 	router, err := config.LoadConfig(tmpFile.Name())
 	if err != nil {
