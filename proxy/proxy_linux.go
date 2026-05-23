@@ -32,6 +32,12 @@ const (
 
 // GetOriginalDST returns the original destination address of a transparently proxied TCP connection in Linux.
 func GetOriginalDST(conn *net.TCPConn) (string, error) {
+	// If a fallback destination is explicitly set (e.g. during E2E testing),
+	// bypass getsockopt and return the fallback address immediately.
+	if dst := getFallbackDst(); dst != "" {
+		return dst, nil
+	}
+
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return "", err

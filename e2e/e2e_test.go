@@ -79,11 +79,17 @@ func TestE2EPepTransmission(t *testing.T) {
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	_, _ = tmpFile.Write(routesData)
+	_ = tmpFile.Sync()
 	_ = tmpFile.Close()
 
 	router, err := config.LoadConfig(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load temp routes config: %v", err)
+	}
+
+	// Verify that the route was successfully loaded
+	if pep, lookupErr := router.Lookup(echoAddr); lookupErr != nil || pep != serverUDPAddr {
+		t.Fatalf("Loaded router does not contain target route! lookupErr=%v, pep=%s, expected=%s", lookupErr, pep, serverUDPAddr)
 	}
 
 	// 4. Start Client-PEP (TCP transparent proxy listener)
