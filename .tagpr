@@ -46,5 +46,5 @@
 	vPrefix = true
 	releaseBranch = main
 	versionFile = version.go
-	majorLabels = corba-major
-	minorLabels = corba-minor
+	majorLabels = pep-major
+	minorLabels = pep-minor
