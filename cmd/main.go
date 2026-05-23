@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -28,6 +29,12 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("[PEP Main] %v", err)
+	}
+}
+
+func run() error {
 	mode := flag.String("mode", "client", "PEP mode: client or server")
 	listenAddr := flag.String("listen", ":10080", "TCP transparent proxy listen address (client) or UDP listen address (server)")
 	routesPath := flag.String("routes", "routes.yaml", "Path to routing table YAML config (client mode only)")
@@ -58,25 +65,25 @@ func main() {
 		// Load routing config
 		router, err := config.LoadConfig(*routesPath)
 		if err != nil {
-			log.Fatalf("[PEP Main] Failed to load routes from %s: %v", *routesPath, err)
+			return fmt.Errorf("failed to load routes from %s: %w", *routesPath, err)
 		}
 		log.Printf("[PEP Main] Loaded routing config from %s", *routesPath)
 
 		clientPEP = proxy.NewClientPEP(ctx, *listenAddr, router, *mtu, *bandwidth, *fecK, *fecM, idleTimeout)
 		if err := clientPEP.Start(); err != nil {
-			log.Fatalf("[PEP Main] Client-PEP start failed: %v", err)
+			return fmt.Errorf("client-PEP start failed: %w", err)
 		}
 		defer clientPEP.Stop()
 
 	case "server":
 		serverPEP = proxy.NewServerPEP(ctx, *listenAddr, *mtu, *bandwidth, *fecK, *fecM, idleTimeout)
 		if err := serverPEP.Start(); err != nil {
-			log.Fatalf("[PEP Main] Server-PEP start failed: %v", err)
+			return fmt.Errorf("server-PEP start failed: %w", err)
 		}
 		defer serverPEP.Stop()
 
 	default:
-		log.Fatalf("[PEP Main] Invalid mode: %s. Must be 'client' or 'server'", *mode)
+		return fmt.Errorf("invalid mode: %s. Must be 'client' or 'server'", *mode)
 	}
 
 	if *redisAddr != "" {
@@ -112,4 +119,5 @@ func main() {
 			break
 		}
 	}
+	return nil
 }

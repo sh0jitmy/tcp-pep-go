@@ -168,6 +168,10 @@ func (s *RedisServer) handleCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR invalid stream ID in key")
 			return
 		}
+		if streamIDVal < 0 || streamIDVal > 65535 {
+			conn.WriteError("ERR invalid stream ID range")
+			return
+		}
 		streamID := uint16(streamIDVal)
 
 		var foundSess *Session

@@ -18,6 +18,7 @@
 package proxy
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"syscall"
@@ -54,7 +55,7 @@ func GetOriginalDST(conn *net.TCPConn) (string, error) {
 		)
 		if errno == 0 {
 			ip := net.IP(val.Addr[:])
-			port := int(val.Port[0])<<8 | int(val.Port[1])
+			port := int(binary.BigEndian.Uint16((*[2]byte)(unsafe.Pointer(&val.Port))[:]))
 			originalAddr = fmt.Sprintf("%s:%d", ip.String(), port)
 			return
 		}
@@ -73,7 +74,7 @@ func GetOriginalDST(conn *net.TCPConn) (string, error) {
 		)
 		if errno == 0 {
 			ip := net.IP(val6.Addr[:])
-			port := int(val6.Port[0])<<8 | int(val6.Port[1])
+			port := int(binary.BigEndian.Uint16((*[2]byte)(unsafe.Pointer(&val6.Port))[:]))
 			originalAddr = net.JoinHostPort(ip.String(), fmt.Sprint(port))
 			return
 		}

@@ -103,6 +103,7 @@ func Marshal(p *Packet) ([]byte, error) {
 		buf := make([]byte, 3+len(addrBytes))
 		buf[0] = base0
 		buf[1] = base1
+		//nolint:gosec
 		buf[2] = byte(len(addrBytes))
 		copy(buf[3:], addrBytes)
 		return buf, nil
