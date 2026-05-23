@@ -86,6 +86,9 @@ func GetOriginalDST(conn *net.TCPConn) (string, error) {
 		return "", err
 	}
 	if errGetSockOpt != nil {
+		if dst := getFallbackDst(); dst != "" {
+			return dst, nil
+		}
 		return "", fmt.Errorf("getsockopt SO_ORIGINAL_DST failed: %w", errGetSockOpt)
 	}
 	return originalAddr, nil
