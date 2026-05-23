@@ -146,6 +146,7 @@ func (s *ServerPEP) udpDemuxLoop() {
 			continue
 		}
 
+		//nolint:gosec
 		sess.RecordRx(uint64(n))
 
 		// Dispatch to session

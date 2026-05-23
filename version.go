@@ -12,20 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !linux
-// +build !linux
+package version
 
-package proxy
-
-import (
-	"net"
-)
-
-// GetOriginalDST returns a fallback destination address for testing and cross-platform compatibility.
-func GetOriginalDST(conn *net.TCPConn) (string, error) {
-	dst := getFallbackDst()
-	if dst == "" {
-		return "127.0.0.1:8080", nil
-	}
-	return dst, nil
-}
+const Version = "0.0.0"

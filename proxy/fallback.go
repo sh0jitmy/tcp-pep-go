@@ -12,20 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !linux
-// +build !linux
-
 package proxy
 
-import (
-	"net"
+import "sync"
+
+var (
+	fallbackDst   string
+	fallbackDstMu sync.RWMutex
 )
 
-// GetOriginalDST returns a fallback destination address for testing and cross-platform compatibility.
-func GetOriginalDST(conn *net.TCPConn) (string, error) {
-	dst := getFallbackDst()
-	if dst == "" {
-		return "127.0.0.1:8080", nil
-	}
-	return dst, nil
+// SetFallbackDst sets the fallback destination address used when SO_ORIGINAL_DST is not available (e.g., on macOS/Windows, or in tests).
+func SetFallbackDst(addr string) {
+	fallbackDstMu.Lock()
+	defer fallbackDstMu.Unlock()
+	fallbackDst = addr
+}
+
+func getFallbackDst() string {
+	fallbackDstMu.RLock()
+	defer fallbackDstMu.RUnlock()
+	return fallbackDst
 }

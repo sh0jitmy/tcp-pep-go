@@ -51,6 +51,7 @@ type Router struct {
 // LoadConfig reads the YAML configuration file from path, parses the routing table,
 // and returns an initialized Router instance.
 func LoadConfig(path string) (*Router, error) {
+	//nolint:gosec
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

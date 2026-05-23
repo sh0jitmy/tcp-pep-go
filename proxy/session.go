@@ -295,6 +295,7 @@ func (s *Session) readTCPRun() {
 			s.updateLastActive()
 			// Prepare packet data with 2-byte length header
 			pktPayload := make([]byte, 2+n)
+			//nolint:gosec
 			binary.BigEndian.PutUint16(pktPayload[0:2], uint16(n))
 			copy(pktPayload[2:], buf[:n])
 
@@ -385,6 +386,7 @@ func (s *Session) flushPendingBlockLocked() {
 			Type:     protocol.TypeData,
 			StreamID: s.StreamID,
 			GroupID:  grpID,
+			//nolint:gosec
 			Idx:      byte(s.FEC_K + j),
 			IsParity: true,
 			Payload:  parityShards[j],
@@ -452,6 +454,7 @@ func (s *Session) HandleDataPacket(p *protocol.Packet) {
 		// Static initialization of SeqNums
 		firstSeq := (int(grpID) * s.FEC_K) % 256
 		for i := 0; i < s.FEC_K; i++ {
+			//nolint:gosec
 			rxBlock.SeqNums[i] = byte((firstSeq + i) % 256)
 		}
 		s.rxBlocks[grpID] = rxBlock

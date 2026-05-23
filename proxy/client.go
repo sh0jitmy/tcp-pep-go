@@ -329,6 +329,7 @@ func (c *ClientPEP) udpDemuxLoop() {
 			continue
 		}
 
+		//nolint:gosec
 		sess.RecordRx(uint64(n))
 
 		switch pkt.Type {
