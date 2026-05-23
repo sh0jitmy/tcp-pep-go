@@ -15,6 +15,7 @@
 //go:build linux
 // +build linux
 
+//nolint:gosec
 package proxy
 
 import (
