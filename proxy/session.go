@@ -95,6 +95,8 @@ type Session struct {
 	rxBlocks     map[uint16]*RxBlock
 	writeCond    *sync.Cond
 	recvClosed   bool
+	maxRecvGrp   uint16
+	hasRecv      bool
 
 	// Lifecycle
 	ctx        context.Context
@@ -102,11 +104,12 @@ type Session struct {
 	lastActive int64
 
 	// Statistics
-	txBytes   uint64
-	rxBytes   uint64
-	txPackets uint64
-	rxPackets uint64
-	losses    uint32
+	txBytes           uint64
+	rxBytes           uint64
+	txPackets         uint64
+	rxPackets         uint64
+	losses            uint32
+	txRetransmissions uint64
 }
 
 // NewSession instantiates a new Session for tracking and pacing data transfer on a stream.
@@ -122,9 +125,9 @@ func NewSession(ctx context.Context, streamID uint16, conn *net.TCPConn, pepAddr
 		Bandwidth:     bandwidth,
 		FEC_K:         k,
 		FEC_M:         m,
-		curM:          m,                      // Start with max parity
-		LQRTimeoutDur: 150 * time.Millisecond, // Will be updated dynamically based on bandwidth
-		NAKDelayDur:   200 * time.Millisecond,
+		curM:          m,                     // Start with max parity
+		LQRTimeoutDur: 50 * time.Millisecond, // Will be updated dynamically based on bandwidth
+		NAKDelayDur:   50 * time.Millisecond,
 		FEC:           fec.NewFEC(),
 		txBlocks:      make(map[uint16]*TxBlock),
 		harqCache:     make(map[byte]*protocol.Packet),
@@ -172,6 +175,30 @@ func (s *Session) Start() {
 
 	// Start TCP Write Loop (UDP -> TCP)
 	go s.writeTCPRun()
+
+	// Initialize the first receive block (GroupID 0) to recover from early packet loss
+	s.muRecv.Lock()
+	if len(s.rxBlocks) == 0 {
+		mSize := s.FEC_M
+		rxBlock := &RxBlock{
+			GroupID: 0,
+			K:       s.FEC_K,
+			M:       mSize,
+			Packets: make([][]byte, s.FEC_K+mSize),
+			SeqNums: make([]byte, s.FEC_K),
+		}
+		// Initialize SeqNums for Group 0
+		for i := 0; i < s.FEC_K; i++ {
+			rxBlock.SeqNums[i] = byte(i % 256)
+		}
+		s.rxBlocks[0] = rxBlock
+
+		// Set up LQR timeout
+		rxBlock.LQRTimer = time.AfterFunc(s.LQRTimeoutDur, func() {
+			s.handleLQRTimeout(0)
+		})
+	}
+	s.muRecv.Unlock()
 }
 
 // Close terminates all concurrent worker routines, closes the TCP connection,
@@ -249,20 +276,71 @@ func (s *Session) readTCPRun() {
 			}
 		}
 
-		// Send CLOSE packet to peer
-		s.sendPacketDirect(&protocol.Packet{
-			Type:     protocol.TypeClose,
-			StreamID: s.StreamID,
-		})
+		// Wait for all sent blocks to be acknowledged by LQR from the receiver
+		// Max timeout 3 seconds to avoid blocking indefinitely if LQR is lost
+		lqrWaitStart := time.Now()
+		for time.Since(lqrWaitStart) < 3*time.Second {
+			s.muSend.Lock()
+			allAcked := true
+			for _, block := range s.txBlocks {
+				if !block.LQRRecved {
+					allAcked = false
+					break
+				}
+			}
+			s.muSend.Unlock()
 
-		s.muSend.Lock()
-		s.closeSent = true
-		bothClosed := s.closeSent && s.closeRecv
-		s.muSend.Unlock()
-
-		if bothClosed {
-			s.Close()
+			if allAcked {
+				break
+			}
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
 		}
+
+		// Start CLOSE retransmission goroutine
+		go func() {
+			ticker := time.NewTicker(300 * time.Millisecond)
+			defer ticker.Stop()
+
+			// Send first CLOSE
+			s.sendPacketDirect(&protocol.Packet{
+				Type:     protocol.TypeClose,
+				StreamID: s.StreamID,
+			})
+
+			s.muSend.Lock()
+			s.closeSent = true
+			bothClosed := s.closeSent && s.closeRecv
+			s.muSend.Unlock()
+
+			if bothClosed {
+				s.Close()
+				return
+			}
+
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-ticker.C:
+					s.muSend.Lock()
+					if s.closeRecv {
+						s.muSend.Unlock()
+						return
+					}
+					s.muSend.Unlock()
+
+					// Retransmit CLOSE
+					s.sendPacketDirect(&protocol.Packet{
+						Type:     protocol.TypeClose,
+						StreamID: s.StreamID,
+					})
+				}
+			}
+		}()
 	}()
 
 	// Max payload size calculation
@@ -318,11 +396,13 @@ func (s *Session) readTCPRun() {
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				log.Printf("[Stream %d] TCP Read error: %v", s.StreamID, err)
-				// Send RESET packet
-				s.sendPacketDirect(&protocol.Packet{
-					Type:     protocol.TypeReset,
-					StreamID: s.StreamID,
-				})
+				// Send RESET packet multiple times for redundancy
+				for i := 0; i < 5; i++ {
+					s.sendPacketDirect(&protocol.Packet{
+						Type:     protocol.TypeReset,
+						StreamID: s.StreamID,
+					})
+				}
 				s.Close()
 			}
 			return
@@ -436,6 +516,13 @@ func (s *Session) HandleDataPacket(p *protocol.Packet) {
 	}
 
 	grpID := p.GroupID
+	if !s.hasRecv {
+		s.maxRecvGrp = grpID
+		s.hasRecv = true
+	} else if diff := grpID - s.maxRecvGrp; diff > 0 && diff < 32768 {
+		s.maxRecvGrp = grpID
+	}
+
 	if diff := s.nextWriteGrp - grpID; diff > 0 && diff < 32768 {
 		return
 	}
@@ -585,23 +672,28 @@ func (s *Session) handleLQRTimeout(grpID uint16) {
 		Losses:   byte(losses),
 	})
 
-	// Check if HARQ (NAK) is required after NAKDelayDur
-	time.AfterFunc(s.NAKDelayDur, func() {
-		s.muRecv.Lock()
-		defer s.muRecv.Unlock()
+	// Start periodic NAK loop
+	var sendNakPeriodic func()
+	sendNakPeriodic = func() {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
 
+		s.muRecv.Lock()
 		rxBlock, ok := s.rxBlocks[grpID]
 		if !ok || rxBlock.Decoded {
+			s.muRecv.Unlock()
 			return
 		}
 
 		if rxBlock.ReceivedCnt < rxBlock.K {
-			// Block cannot be decoded, send NAKs for missing data shards
+			// Send NAKs for missing data shards
 			for i := 0; i < rxBlock.K; i++ {
 				if rxBlock.Packets[i] == nil {
 					seqNum := rxBlock.SeqNums[i]
 					s.muRecv.Unlock()
-					// Send NAK
 					s.sendPacketDirect(&protocol.Packet{
 						Type:     protocol.TypeNak,
 						StreamID: s.StreamID,
@@ -611,7 +703,14 @@ func (s *Session) handleLQRTimeout(grpID uint16) {
 				}
 			}
 		}
-	})
+		s.muRecv.Unlock()
+
+		// Schedule next periodic NAK check
+		time.AfterFunc(s.NAKDelayDur, sendNakPeriodic)
+	}
+
+	// Schedule the first NAK check after NAKDelayDur
+	time.AfterFunc(s.NAKDelayDur, sendNakPeriodic)
 }
 
 func (s *Session) writeTCPRun() {
@@ -636,6 +735,23 @@ func (s *Session) writeTCPRun() {
 			block, ok := s.rxBlocks[s.nextWriteGrp]
 			if ok && block.Decoded {
 				break
+			}
+
+			// If we received CLOSE, and we have written everything up to maxRecvGrp,
+			// we can safely terminate the loop.
+			s.muSend.Lock()
+			closeRecv := s.closeRecv
+			s.muSend.Unlock()
+
+			if closeRecv {
+				if !s.hasRecv {
+					s.muRecv.Unlock()
+					return
+				}
+				if diff := s.nextWriteGrp - s.maxRecvGrp; diff > 0 && diff < 32768 {
+					s.muRecv.Unlock()
+					return
+				}
 			}
 
 			s.writeCond.Wait()
@@ -747,6 +863,7 @@ func (s *Session) HandleNak(p *protocol.Packet) {
 		if err == nil {
 			// Re-enqueue packet for transmission (bypass normal FEC group formation)
 			s.Shaper.Enqueue(buf)
+			atomic.AddUint64(&s.txRetransmissions, 1)
 			log.Printf("[Stream %d] HARQ retransmitting SeqNum %d", s.StreamID, p.SeqNum)
 		}
 	} else {
@@ -762,7 +879,9 @@ func (s *Session) HandleClose() {
 	bothClosed := s.closeSent && s.closeRecv
 	s.muSend.Unlock()
 
-	_ = s.Conn.CloseWrite()
+	s.muRecv.Lock()
+	s.writeCond.Broadcast() // Wake up write loop to check closeRecv
+	s.muRecv.Unlock()
 
 	if bothClosed {
 		s.Close()
@@ -781,19 +900,20 @@ func (s *Session) IsClosed() bool {
 
 // SessionStats holds a snapshot of metrics and parameters for a stream session.
 type SessionStats struct {
-	StreamID      uint16 `json:"stream_id"`
-	Mode          string `json:"mode"`
-	TargetAddr    string `json:"target_addr"`
-	CurM          int    `json:"cur_m"`
-	FEC_K         int    `json:"fec_k"`
-	FEC_M         int    `json:"fec_m"`
-	TxBytes       uint64 `json:"tx_bytes"`
-	RxBytes       uint64 `json:"rx_bytes"`
-	TxPackets     uint64 `json:"tx_packets"`
-	RxPackets     uint64 `json:"rx_packets"`
-	Losses        uint32 `json:"losses"`
-	ConsecutiveOk int    `json:"consecutive_ok"`
-	LastActive    string `json:"last_active"`
+	StreamID          uint16 `json:"stream_id"`
+	Mode              string `json:"mode"`
+	TargetAddr        string `json:"target_addr"`
+	CurM              int    `json:"cur_m"`
+	FEC_K             int    `json:"fec_k"`
+	FEC_M             int    `json:"fec_m"`
+	TxBytes           uint64 `json:"tx_bytes"`
+	RxBytes           uint64 `json:"rx_bytes"`
+	TxPackets         uint64 `json:"tx_packets"`
+	RxPackets         uint64 `json:"rx_packets"`
+	Losses            uint32 `json:"losses"`
+	TxRetransmissions uint64 `json:"tx_retransmissions"`
+	ConsecutiveOk     int    `json:"consecutive_ok"`
+	LastActive        string `json:"last_active"`
 }
 
 // GetMonitorStats returns a thread-safe snapshot of the current session metrics.
@@ -814,19 +934,20 @@ func (s *Session) GetMonitorStats() SessionStats {
 	}
 
 	return SessionStats{
-		StreamID:      s.StreamID,
-		Mode:          mode,
-		TargetAddr:    target,
-		CurM:          curM,
-		FEC_K:         s.FEC_K,
-		FEC_M:         s.FEC_M,
-		TxBytes:       atomic.LoadUint64(&s.txBytes),
-		RxBytes:       atomic.LoadUint64(&s.rxBytes),
-		TxPackets:     atomic.LoadUint64(&s.txPackets),
-		RxPackets:     atomic.LoadUint64(&s.rxPackets),
-		Losses:        atomic.LoadUint32(&s.losses),
-		ConsecutiveOk: consecutiveOk,
-		LastActive:    s.GetLastActive().Format(time.RFC3339),
+		StreamID:          s.StreamID,
+		Mode:              mode,
+		TargetAddr:        target,
+		CurM:              curM,
+		FEC_K:             s.FEC_K,
+		FEC_M:             s.FEC_M,
+		TxBytes:           atomic.LoadUint64(&s.txBytes),
+		RxBytes:           atomic.LoadUint64(&s.rxBytes),
+		TxPackets:         atomic.LoadUint64(&s.txPackets),
+		RxPackets:         atomic.LoadUint64(&s.rxPackets),
+		Losses:            atomic.LoadUint32(&s.losses),
+		TxRetransmissions: atomic.LoadUint64(&s.txRetransmissions),
+		ConsecutiveOk:     consecutiveOk,
+		LastActive:        s.GetLastActive().Format(time.RFC3339),
 	}
 }
 

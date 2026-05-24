@@ -223,7 +223,7 @@ func (c *ClientPEP) handleTCPConn(conn *net.TCPConn) {
 	c.pendingConnects[streamID] = ch
 	c.muConnect.Unlock()
 
-	// 5. Send CONNECT packet to Server-PEP
+	// 5. Send CONNECT packet periodically until acknowledged or timeout
 	connectPkt := &protocol.Packet{
 		Type:     protocol.TypeConnect,
 		StreamID: streamID,
@@ -239,32 +239,41 @@ func (c *ClientPEP) handleTCPConn(conn *net.TCPConn) {
 		return
 	}
 
-	_, err = c.udpConn.WriteTo(buf, serverPEPAddr)
-	if err != nil {
-		log.Printf("[Client-PEP] Send connect failed: %v", err)
-		_ = conn.Close()
-		c.muConnect.Lock()
-		delete(c.pendingConnects, streamID)
-		c.muConnect.Unlock()
-		return
-	}
+	// Start a ticker to retransmit CONNECT packet
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
 
-	// 6. Wait for CONN_ACK or timeout (3 seconds)
-	select {
-	case connErr := <-ch:
-		if connErr != nil {
-			log.Printf("[Client-PEP] Connection error from Server-PEP for StreamID=%d: %v", streamID, connErr)
+	// Overall handshake timeout
+	handshakeTimeout := time.After(15 * time.Second)
+
+	// Send initial CONNECT
+	_, _ = c.udpConn.WriteTo(buf, serverPEPAddr)
+
+	for {
+		select {
+		case connErr := <-ch:
+			if connErr != nil {
+				log.Printf("[Client-PEP] Connection error from Server-PEP for StreamID=%d: %v", streamID, connErr)
+				_ = conn.Close()
+				return
+			}
+			goto handshakeSucceeded
+
+		case <-ticker.C:
+			// Retransmit CONNECT
+			_, _ = c.udpConn.WriteTo(buf, serverPEPAddr)
+
+		case <-handshakeTimeout:
+			log.Printf("[Client-PEP] Handshake timeout from Server-PEP for StreamID=%d after 15s", streamID)
 			_ = conn.Close()
+			c.muConnect.Lock()
+			delete(c.pendingConnects, streamID)
+			c.muConnect.Unlock()
 			return
 		}
-	case <-time.After(3 * time.Second):
-		log.Printf("[Client-PEP] Handshake timeout from Server-PEP for StreamID=%d", streamID)
-		_ = conn.Close()
-		c.muConnect.Lock()
-		delete(c.pendingConnects, streamID)
-		c.muConnect.Unlock()
-		return
 	}
+
+handshakeSucceeded:
 
 	// 7. Handshake succeeded, instantiate session
 	sess := NewSession(c.ctx, streamID, conn, serverPEPAddr, c.udpConn, false, c.mtu, c.bandwidth, c.fecK, c.fecM)

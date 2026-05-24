@@ -146,6 +146,20 @@ func (s *ServerPEP) udpDemuxLoop() {
 			continue
 		}
 
+		if pkt.Type == protocol.TypeConnect {
+			// Already connected but client retransmitted CONNECT.
+			// Re-send CONN_ACK.
+			ackPkt := &protocol.Packet{
+				Type:     protocol.TypeConnAck,
+				StreamID: pkt.StreamID,
+			}
+			ackBuf, err := protocol.Marshal(ackPkt)
+			if err == nil {
+				_, _ = s.udpConn.WriteToUDP(ackBuf, rAddr)
+			}
+			continue
+		}
+
 		//nolint:gosec
 		sess.RecordRx(uint64(n))
 
