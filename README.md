@@ -86,6 +86,27 @@ kill -HUP <PID_OF_TCP_PEP_DAEMON>
 
 ---
 
+## Command Line Options
+
+The PEP daemon supports the following command-line flags:
+
+| Option | Type | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `-mode` | string | `client` | PEP operation mode. Either `client` (TCP transparent proxy intercepting) or `server` (UDP listening and TCP termination). |
+| `-listen` | string | `:10080` | Listen address. For `client` mode, it is the TCP transparent proxy listen address. For `server` mode, it is the UDP encapsulation listening address. |
+| `-routes` | string | `routes.yaml` | Path to the routing table YAML file mapping original TCP destinations to Server-PEP UDP addresses (client mode only). |
+| `-mtu` | int | `1200` | Link MTU size (maximum payload size for UDP packets). Allowed range: 100 to 1500. |
+| `-bandwidth` | int | `128000` | Link bandwidth limit in bps (e.g., `128000` for 128 kbps). Set to `0` to disable the token-bucket shaper. |
+| `-fec-k` | int | `10` | FEC data shards $K$ (number of data packets in one coding block). |
+| `-fec-m` | int | `3` | FEC maximum parity shards $M$ (maximum number of parity packets in one block, defining the upper bound for adaptive scaling). |
+| `-idle-timeout` | int | `300` | Session idle timeout in seconds before resources are automatically cleaned up. |
+| `-redis-addr` | string | `:6379` | Address of the embedded Redis (RESP) monitoring server. Set to an empty string to disable. |
+| `-http-addr` | string | `:8080` | Address of the embedded HTTP/HTTPS monitoring server. Set to an empty string to disable. |
+| `-http-cert` | string | `""` | Path to the SSL certificate file (.crt) for HTTPS monitoring. If set, HTTPS is enabled. |
+| `-http-key` | string | `""` | Path to the SSL private key file (.key) for HTTPS monitoring. Must be provided alongside `-http-cert`. |
+
+---
+
 ## Usage
 
 ### 1. Server-PEP Mode
@@ -112,6 +133,55 @@ Start the PEP daemon on the client side (intercepting transparently redirected T
   -fec-k 5 \
   -fec-m 2 \
   -redis-addr :6379
+```
+
+---
+
+## Real-time Monitoring via Built-in HTTP/HTTPS Interface
+
+The Client-PEP and Server-PEP daemons spin up a lightweight embedded HTTP/HTTPS server (on port `:8080` by default or as configured via `-http-addr`).
+
+You can fetch live session statistics in JSON format by sending a GET request to `/` or `/stats`.
+
+### 1. Querying over HTTP
+```bash
+$ curl http://127.0.0.1:8080/stats
+```
+or
+```bash
+$ curl http://127.0.0.1:8080/
+```
+
+### 2. JSON Response Example
+```json
+{
+  "1": {
+    "stream_id": 1,
+    "mode": "client",
+    "target_addr": "127.0.0.1:8080",
+    "cur_m": 0,
+    "fec_k": 5,
+    "fec_m": 2,
+    "tx_bytes": 109840,
+    "rx_bytes": 109840,
+    "tx_packets": 110,
+    "rx_packets": 110,
+    "tx_retransmissions": 0,
+    "losses": 0,
+    "consecutive_ok": 12,
+    "last_active": "2026-05-23T22:31:49Z"
+  }
+}
+```
+
+### 3. Querying over HTTPS
+When certificate and key paths are specified:
+```bash
+$ ./tcp-pep-daemon -http-addr :8443 -http-cert server.crt -http-key server.key
+```
+In this case, query the endpoint using HTTPS (use `-k` or `--insecure` if you are using self-signed certificates):
+```bash
+$ curl -k https://127.0.0.1:8443/stats
 ```
 
 ---

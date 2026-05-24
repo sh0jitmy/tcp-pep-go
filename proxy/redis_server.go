@@ -190,7 +190,7 @@ func (s *RedisServer) handleCommand(conn redcon.Conn, cmd redcon.Command) {
 
 		stats := foundSess.GetMonitorStats()
 
-		conn.WriteArray(26) // 13 pairs
+		conn.WriteArray(28) // 14 pairs
 
 		conn.WriteBulkString("stream_id")
 		conn.WriteBulkString(strconv.Itoa(int(stats.StreamID)))
@@ -224,6 +224,9 @@ func (s *RedisServer) handleCommand(conn redcon.Conn, cmd redcon.Command) {
 
 		conn.WriteBulkString("losses")
 		conn.WriteBulkString(strconv.FormatUint(uint64(stats.Losses), 10))
+
+		conn.WriteBulkString("tx_retransmissions")
+		conn.WriteBulkString(strconv.FormatUint(stats.TxRetransmissions, 10))
 
 		conn.WriteBulkString("consecutive_ok")
 		conn.WriteBulkString(strconv.Itoa(stats.ConsecutiveOk))
