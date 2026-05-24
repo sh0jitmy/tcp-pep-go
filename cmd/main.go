@@ -44,6 +44,9 @@ func run() error {
 	fecM := flag.Int("fec-m", 3, "FEC Parity Shards M")
 	idleTimeoutSec := flag.Int("idle-timeout", 300, "Idle session timeout in seconds")
 	redisAddr := flag.String("redis-addr", ":6379", "Embedded Redis monitoring server address (empty to disable)")
+	httpAddr := flag.String("http-addr", ":8080", "Embedded HTTP monitoring server address (empty to disable)")
+	httpCert := flag.String("http-cert", "", "Path to SSL certificate file for HTTPS monitoring")
+	httpKey := flag.String("http-key", "", "Path to SSL private key file for HTTPS monitoring")
 
 	flag.Parse()
 
@@ -98,6 +101,21 @@ func run() error {
 			log.Printf("[PEP Main] Embedded Redis server failed to start: %v", err)
 		} else {
 			defer redisServer.Stop()
+		}
+	}
+
+	if *httpAddr != "" {
+		var pepInst proxy.PEPInstance
+		if *mode == "client" {
+			pepInst = clientPEP
+		} else {
+			pepInst = serverPEP
+		}
+		httpServer := proxy.NewHTTPServer(*httpAddr, *httpCert, *httpKey, pepInst)
+		if err := httpServer.Start(); err != nil {
+			log.Printf("[PEP Main] Embedded HTTP server failed to start: %v", err)
+		} else {
+			defer httpServer.Stop()
 		}
 	}
 
