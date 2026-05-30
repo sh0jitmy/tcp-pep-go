@@ -4,7 +4,7 @@ go 1.25.9
 
 require (
 	github.com/klauspost/reedsolomon v1.14.0
-	github.com/redis/go-redis/v9 v9.19.0
+	github.com/redis/go-redis/v9 v9.20.0
 	github.com/tidwall/redcon v1.6.2
 	gopkg.in/yaml.v3 v3.0.1
 )
